@@ -1,0 +1,340 @@
+---
+title: "Problem set 2"
+author: "Yonatan Schoen"
+date: "2023-05-14"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# ML for economics - Problem Set 2
+
+# Linear Regression
+
+## Part 1 - Preface
+
+### Question 1
+For my understanding, in prediction(as in ML) our main purpose is to find a model that can fit and generalize the patterns in our data for any future data i.e. only find the most accurate prediction. Thats in contrast of the former situation in which we look for casual inference.
+
+In this case, we're mostly care about how well the linear regression (if we used it) generalizes to unseen data, and this can be done without making any assumptions about the "real" estimators.
+
+
+### Question 2
+
+The downside of adding interactions is that it increases the number of X's(covariates) in the model. 
+Because obs. stays the same, the ratio of obs.(n) to the number of covariates(k) becomes smaller as we add interactions, making it more difficult to estimate the coefficients with precision and accuracy.  Precisely, this can lead to higher standard errors (b/c k is in the numarator), which can make it difficult to determine whether the coefficients are statistically significant. In addition we are limited in our feature numbers by n, and can estimate only when n > k.
+
+### Question 3 
+Those 3 assumptions are strong because it in many cases their may not hold in real-world situtations.
+In many cases, there may be underlying trends that aren't captured by the X's, which could lead to non-zero mean errors and.
+As for normality - many times, empirically, we see the error term actually does not follow normal distribution - especially when we talking about small samples.Finally homoskedasticity is very strong as well - there may be cases where the variance of the errors varies systematically with the observed predictors, as we will see in the following exampele.
+
+Simple example can be a study that seeks to model the relationship between a person's weight (X) and level of physical activity(Outcome).
+However, we know that physical activity is also influenced by other observed X's such as age, health status, gender and etc. 
+Those important factors are not included in the model as X's, so their effect on activity captured by the error.In this case for example, if older individuals tend to have lower levels of physical activity, the error term may not be normally distributed, since the influence of age on physical activity may cause the distribution to be skewed or have a non-constant variance.
+
+
+### Question 4
+Normal distribution of the errors terms allows us to derive the standard error of the estimated coefficients, which in turn is used to construct confidence intervals. The wider the confidence interval, the less certain we are about the true value of the "real" coefficient. 
+Therefore, only if the assumptions are met, we can be reasonably confident that the true coefficient lies within the range provided by the confidence interval. Otherwise (in heteroscedasticity for example) we cannot be sure that our estimands are unbiased, and therefore our intervals are actually too narrow or wide.
+
+
+## Part 2 - Data!
+
+### load the required packages
+```{r setup, message=FALSE, warning=FALSE}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  tidyverse,   # for data wrangling and visualization
+  broom,       # for tidying estimation output
+  here,        # for referencing folders and files
+  glmnet,      # for estimating lasso and ridge
+  DataExplorer,
+  tidymodels,
+  parsnip,
+  caret,
+  rsample,
+  yardstick,
+  caTools,
+  pROC,
+  glmnet
+ )
+```
+### Question 1 - load the data
+```{r data, message=FALSE, warning=FALSE }
+wines <- here("data", "winequality_red.csv") %>% 
+  read_csv()
+
+```
+### Question 2 - plot histograms for all variables
+```{r histograms}
+wines %>% 
+  plot_histogram()
+
+```
+### Question 3 - plot boxplots for all against "quality"
+```{r quality}
+#reformat the quality var
+wines %>% mutate(quality = as_factor(quality)) 
+
+wines %>% 
+  plot_boxplot(by = "quality")
+
+```
+
+## Part 3 - Model
+
+### Question 1 - Data splitting 
+```{r data split, warning=FALSE,error=FALSE }
+set.seed(100)
+wine_split <- wines %>% 
+  initial_split(prop = 0.7)
+
+#split to the data train and test
+wine_train <- training(wine_split)
+wine_test  <- testing(wine_split)
+```
+
+### Question 2 - Train the model
+```{r run the model}
+# Build a linear model specification
+lm_spec <- linear_reg() %>% 
+    set_engine("lm") 
+
+# Train a linear regression model
+lm_mod <- lm_spec %>% 
+  fit(quality ~ ., data = wine_train)
+
+lm_mod %>% 
+  tidy()
+```
+
+### Question 3 - 
+```{r prediction test, warning=FALSE,error=FALSE}
+# Predict outcomes of test set
+wine_predictions <- predict(lm_mod, new_data = wine_test) %>% bind_cols(wine_test) %>% 
+  select(quality, .pred)
+
+head(round(wine_predictions)) 
+```
+
+### Question 4 - find RMSE, R-squared and MAE
+```{r quality box plot}
+#RMSE Is - 
+metrics <- wine_predictions %>% 
+  rmse(quality, .pred) %>% 
+  bind_rows(rsq(wine_predictions,quality, .pred)) %>% 
+  bind_rows(mae(wine_predictions,quality, .pred))
+
+metrics
+```
+
+### Question 5
+The main difference between confidence intervals and t-tests versus RMSE is that the first two are focused on the coefficient relationship between one another and compared to the real population, while RMSE is more about measuring the model accuracy prediction of the outcome variables as a whole. Therefore, Confidence intervals and t-tests are focused on individual coefficients, while RMSE provides a global measure of model performance.\\
+
+
+## Logistic Regression
+
+## Part 1 - Data
+
+### Question 1 - Load the data
+```{r data 1, message=FALSE, warning=FALSE }
+hearts <- here("data", "heart.csv") %>% 
+  read_csv()
+```
+
+### Question 2 - plot histograms for all variables
+```{r histograms 2, message=FALSE, warning=FALSE}
+hearts %>% 
+  plot_histogram()
+```
+
+## Part 2 - Model - linear regression
+
+### Question 1 - Data splitting split
+```{r data split 2, warning=FALSE, error=FALSE}
+set.seed(100)
+heart_split <- hearts %>% 
+  initial_split(prop = 0.7)
+
+heart_train <- training(heart_split)
+heart_test  <- testing(heart_split)
+```
+
+### Question 2 - Train the model
+```{r run the model 2}
+# Build a linear model specification
+lm_spec <- linear_reg() %>% 
+    set_engine("lm")
+
+# Train a linear regression model
+lm_mod <- lm_spec %>% 
+  fit(target ~ ., data = heart_train)
+
+lm_mod %>% 
+  tidy()
+```
+
+### Question 3 - 
+```{r prediction`, error=FALSE, warning=FALSE}
+ Predict outcomes of test set
+test_predictions <- predict(lm_mod, new_data = heart_test)
+
+#combine them toghether - 
+heart_pred <- test_predictions %>% 
+  bind_cols(heart_test) %>% 
+  select(target, .pred)
+
+# Print the highest and lowest -
+cat("Largest predicted value:", max(test_predictions), "\n")
+cat("Lowest predicted value:", min(test_predictions), "\n")
+```
+The Problem with those number is that they are bigger and lower then 1 or 0. This is a familiar issue with linear probablistic model, which sometimes gives us unrealistic predictions. This is due to the fact that probability cannot be higher then 1 or lower then 0.
+
+```{r ROC, warning=FALSE,error=FALSE}
+library(ROCit)
+test_roc <- rocit(score = heart_pred$.pred, class = heart_pred$target) %>% 
+  plot()
+
+```
+
+## Part 3 - Model - logistic regression
+
+### Question 1 - model specification
+```{r logistic model, warning = FALSE}
+log_model <- glm(target ~ ., family = "binomial", data = heart_train)
+
+log_model %>% 
+  tidy()
+```
+
+
+### Question 2 - prediction
+```{r predict logit, warning=FALSE,error=FALSE}
+# Predict outcomes of test set
+test_preds <- log_model %>% 
+  predict.glm(newdata = heart_test, type = "response") %>% 
+  as_tibble() %>% 
+  bind_cols(heart_test) %>% 
+  select(target, value)
+
+# Print the largest and lowest predictions
+cat("Largest prediction:", max(test_preds$value), "\n")
+cat("Lowest prediction:", min(test_preds$value), "\n")
+```
+This result seems fine to me. 
+
+One weird outcome is that it seems like the model output is continues probabilities instead of binary predictions. This is make sense because we ran regression and not classification, the output is a probability between 0 and 1 representing the likelihood of the target to occur. For a solution to be binary as well we need to implement some sort of classification model.
+
+### Question 3 - index matrix
+```{r index mat, warning=FALSE,error=FALSE}
+
+### make some threshold, I choose 0.75 (too low will be inaccurate, too high will be to much conservative)
+test_preds <- test_preds %>% 
+  mutate(
+    pred_binary = as_factor(if_else(value < 0.75, 0, 1)),
+    target = as_factor(target)
+  ) 
+
+index_mat <- 
+  test_preds %>% 
+  conf_mat(target, pred_binary) 
+
+index_mat %>% 
+  summary() %>% 
+  filter(.metric %in% c("accuracy", "sens", "spec")) 
+```
+
+## Regulation - Ridge
+
+### Theoretical Question 1
+As we talked in class we use terms such as L1 (absolute val.) or L2 (squared term) to prevent overfitting and avoid too complex model. L1 (such in lasso) helps to produce a sparse model, while L2 (such in Ridge) helps to produce a smoother model.
+
+Without regularization, the model can fit the training data too closely and be sensitive to even small fluctuations or noise in the data. This can result in coefficients that are too large, leading to overemphasizing the importance of certain variables, and leading to poor generalization to new data. Using regularization techniques like L1 or L2 can help prevent overfitting by adding a penalty term to the objective function that discourages large coefficient values, effectively shrinking them towards zero. This helps to simplify the model and reduce overfitting.
+
+### Theoretical Question 2 
+The Lasso's use of the absolute value penalty in the loss function makes the optimization problem non-differentiable at zero, meaning that coefficients can be exactly shrunk to zero, resulting in variable selection. In contrast, Ridge regression uses a squared penalty term, which smoothly shrinks coefficients towards zero but not to zero, so all variables remain in the model. (Chat GPT helped me on this one..)
+
+## Empirical questions 
+
+### Question 1 - plot ridge lambda 
+```{r plot ridge, message=FALSE, warning=FALSE }
+set.seed(100)
+# Separate the data into predictor and response variables
+x <- as.matrix(hearts[, -14]) 
+y <- hearts$target 
+
+ridge_fit <- glmnet(x, y, alpha = 0) 
+
+plot(ridge_fit, xvar = "lambda", label = TRUE)
+```
+
+### Question 2 - cross validation
+```{r cross-val, message=FALSE, warning=FALSE }
+cv_model <- cv.glmnet(x, y, alpha = 0)
+
+# Plot the cross-validation results
+plot(cv_model)
+
+# Print the lambda value with the smallest cross-validation error
+cat("Best lambda:", cv_model$lambda.min, "\n")
+```
+
+### Question 3 - compare the coefficients
+```{r coef plot 2, warning = FALSE}
+#plot the coeficient with minimum MSE lambda
+coef(cv_model, s = "lambda.min")
+
+```
+
+Compared to the logit model we can see that the new estimators are relatively small (very small actually), this is again due to the fact we used regularization model - as mentioned above in the theoretical part.
+
+
+### Question 4 - zero coefficients problem
+
+In econometrics, an optional problem when our covariate equaling zero is that it may lead to model identification issues. If a covariate is equal to zero for all observations in a dataset, it provides no information for estimating the coefficient of that variable in the regression model. This can cause problems with most of our estimation methods, as the model may not be identified or the estimation may be not precise.  
+
+
+### Question 5 - prediction comparison
+```{r coef plot, warning = FALSE}
+heart_no_target <- heart_test[, -which(names(heart_test) == "target")]
+
+# Predict using the minimal lambda value
+ridge_pred_min <- predict(cv_model, newx = as.matrix(heart_no_target), s = cv_model$lambda.min)
+
+# Predict using the 1se lambda value
+ridge_pred_1se <- predict(cv_model, newx = as.matrix(heart_no_target),s = cv_model$lambda.1se)
+
+# Compare the results to the logistic regression
+logit_pred <- predict(log_model, newdata = heart_no_target, type = "response")
+
+# Prediction table :
+compare_mat <- bind_cols(ridge_pred_min, ridge_pred_1se, logit_pred, heart_test$target) %>% 
+  rename(min_lambda = 1, lambda_1se = 2, logit = 3, real = 4)
+
+compare_mat 
+
+```
+In comparison to the logit model we again receive weird results in the minimum lambda, as some observation received predicted values outside of the interval of [0,1]. Nevertheless, this result seems to disappear in the case where lambda is 1se from the minimum lambda
+
+
+
+```{r confusion matrix}
+# Ridge minimal lambda
+
+ridge_min_pred <- round(predict(cv_model , newx =as.matrix(heart_no_target), s = cv_model$lambda.min))
+heart_test$target <- factor(heart_test$target, levels = c(0, 1))
+ridge_min_pred <- factor(ridge_min_pred, levels = c(0, 1))
+
+# Create confusion matrix
+confusionMatrix(heart_test$target, ridge_min_pred)
+
+
+# Ridge 1se lambda
+ridge_1se_pred <- round(predict(cv_model, newx = as.matrix(heart_no_target), s = cv_model$lambda.1se))
+ridge_1se_pred <- factor(ridge_1se_pred, levels = c(0, 1))
+
+# Create confusion matrix
+confusionMatrix(heart_test$target, ridge_1se_pred)
+
+```

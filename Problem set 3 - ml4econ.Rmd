@@ -1,0 +1,333 @@
+---
+title: "Problem set 3"
+author: "Yonatan Schoen"
+date: "2023-05-28"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# ML for economics - Problem Set 3
+
+### Packages install
+```{r setup, warning= FALSE, message= FALSE}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  tidyverse,   
+  broom,      
+  rpart,       
+  rpart.plot,  
+  ranger,
+  rsample,
+  vip,        
+  knitr,       
+  here,        
+  rattle,
+  magrittr,
+  tidymodels,
+  caret,
+  DALEX,
+  RColorBrewer,
+  ada,
+  doParallel,
+  pROC,
+  tinytex
+)
+```
+
+### Question 1 - data load and code chunk
+```{r q1, warning= FALSE}
+# load data heart and change the outcome var to factor (it is numeric at first)
+hearts <- data("heart.csv") %>% 
+  read_csv()  %>% 
+  mutate(target = as_factor(target))
+
+set.seed(167)
+
+# Question 1 - run code
+formula_part <- target ~ sex + cp + chol
+formula_full <- target ~ .
+```
+
+### Question 2 - fit the model
+```{r q2, warning= FALSE}
+# first we split to train 
+hearts_split <- hearts %>% 
+                initial_split(prop = 0.7)
+
+heart_train <- training(hearts_split)
+heart_test <- testing(hearts_split)
+
+# now we fit the model
+tree_fit <- rpart(formula = formula_part,
+                  data = heart_train,
+                  method = "class")
+
+
+fancyRpartPlot(tree_fit, caption = NULL)
+
+```
+
+### Question 3
+```{r}
+tree_fit1 <- rpart(
+  formula = formula_full,
+  data = heart_train,
+  method = "class", 
+  control = rpart.control(
+    minsplit = 2, minbucket = 1
+    )
+  )
+
+tree_fit2 <- rpart(
+  formula = formula_full, 
+  data = heart_train,
+  method = "class"
+  )
+
+
+printcp(tree_fit1)
+printcp(tree_fit2)
+
+```
+
+As can be seen, there is 9 variables in the fully grown restricted model and 5 in the unrestricted one.
+
+### Question 4 - Predict the model 
+```{r predict}
+# For more elegant code I'll insert the prediction and data binding in function
+pred_func <- function(model, data) {
+  model %>% 
+  predict(type = "class", newdata = data) %>% 
+  as_tibble() %>% 
+  bind_cols(data) %>% 
+  select(target, value) %>% 
+  rename("pred" = "value") %>% 
+    mutate()
+}
+
+# Predict the training set
+insample1 <- pred_func(model = tree_fit1, data = heart_train)
+insample2 <- pred_func(model = tree_fit2, data = heart_train)
+
+# Predict the test set
+outsample1 <- pred_func(model = tree_fit1, data = heart_test)
+outsample2 <- pred_func(model = tree_fit2, data = heart_test)
+
+#confusion matrix
+confusionMatrix(insample1$target, insample1$pred)
+confusionMatrix(insample2$target, insample2$pred)
+confusionMatrix(outsample1$target, outsample1$pred)
+confusionMatrix(outsample2$target, outsample2$pred)
+
+```
+The first model (with minimum nodes and obs.) seems to predict better in sample (on train data frame), whereas the second model more accurate on the test set. This is probably due to overfitting of the first one. 
+
+
+###Question 5 - Prune the overgrown model 
+```{r prune}
+# prune the model
+tree_prune <- prune(tree_fit2, cp = 0.03)
+
+# predict again
+insample_prune <- pred_func(model = tree_prune, data = heart_train)
+outsample_prune <- pred_func(model = tree_prune, data = heart_test)
+
+# confusion matrix:
+## In Sample
+confusionMatrix(insample_prune$target, insample_prune$pred)
+## Out Sample
+confusionMatrix(outsample_prune$target, outsample_prune$pred)
+```
+
+The prediction got worse in the in-sample (training set) and improved on the out-sample (test set), which means we reduced overfitting as expected.
+
+## Part 2 - Forests
+
+### Question 1 - define validation method
+```{r }
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3
+  )
+```
+
+### Question 2 - fit the models (KNN, bagging, boosting and random forest) 
+```{r, message= FALSE, results= "hide"}
+for (i in c("knn", "ada", "gbm", "rf")) {
+  assign(paste0(i,"_model"), train(form = formula_full,
+                  data = heart_train,
+                  method = i,
+                  trControl = fitControl
+                  )
+  )
+}
+
+# plot the results
+ggplot(knn_model)
+ggplot(ada_model)
+ggplot(gbm_model)
+ggplot(rf_model)
+```
+### Question 3 - Define gbm Grid
+```{r grid}
+grid_gbm <- expand.grid(
+            interaction.depth = c(1,5,9),
+            n.trees = (1:30)*50,
+            shrinkage = 0.1,
+            n.minobsinnode = 20
+)
+
+```
+
+### Question 4 - train the gbm with the new parameters grid
+```{r train gbm, results= 'hide'}
+gbm_model2 <- train(form = formula_full,
+                  data = heart_train,
+                  method = "gbm",
+                  trControl = fitControl,
+                  tuneGrid = grid_gbm
+                  )
+
+```
+### Question 5 -Plot the results side by side
+```{r plot result}
+gridExtra::grid.arrange(ggplot(gbm_model),ggplot(gbm_model2))
+```
+
+## Part 3 - Interpretability
+
+### Question 1 - explain our models
+```{r explain}
+# Seperate the data
+y <- as.numeric(as.character(heart_train$target))
+x <- heart_train[, names(heart_train) != "target"]
+
+knn_explain <- explain(knn_model,
+                      label= "knn", 
+                      data = x,
+                      y = y)
+  
+ada_explain <- explain(ada_model,
+                      label= "ada", 
+                      data = x,
+                      y = y)
+
+gbm_explain <- explain(gbm_model2,
+                      label= "gbm", 
+                      data = x,
+                      y = y)
+
+rf_explain <- explain(rf_model,
+                      label= "rf", 
+                      data = x,
+                      y = y)
+```
+
+### Question 2 - model performance
+```{r performance}
+
+# Loop through the models
+for (model in c("knn", "ada", "gbm", "rf")) {
+  
+    explainer <- get(paste0(model, "_explain"))
+    model_perf <- model_performance(explainer)
+    assign(paste0(model, "_mp"), model_perf)
+}
+
+# Plot model performance line graph
+plot(knn_mp, ada_mp, gbm_mp, rf_mp)
+
+# Plot model performance box plot
+plot(knn_mp, ada_mp, gbm_mp, rf_mp, geom = "boxplot")
+
+```
+
+For my understanding, the model with the best performence should be the one in which : (1) we recognize the steepest decline - indicating a high proportion of residuals close to zero. (2) box plot with small and symatric box indicating for small spread of the residuals. Therefore, we can see from both of the plots that the random forest model gives us the best performance.
+
+### Question 3 - variable importance
+```{r variable importance}
+# Loop through the models
+for (model in c("knn", "ada", "gbm", "rf")) {
+    explainer <- get(paste0(model, "_explain"))
+    model_perf <- variable_importance(explainer)
+    assign(paste0(model, "_vi"), model_perf)
+}
+
+# Plot variable importance
+plot(knn_vi, ada_vi, gbm_vi, rf_vi)
+```
+The most important variables for explanation seems to be ca, oldpeak, thalach and cp. This result can be found in all the models we tried.
+
+### Question 4 - variable effect
+```{r variable effect}
+# Loop through the models
+for (model in c("knn", "ada", "gbm", "rf")) {
+    explainer <- get(paste0(model, "_explain"))
+    model_perf <- variable_effect(explainer, variables = names(x))
+    assign(paste0(model, "_ve"), model_perf)
+}
+
+# Plot variable importance
+plot(knn_ve, ada_ve, gbm_ve, rf_ve)
+```
+From my understanding, if we notice a positive trend in any variable we can interpret it as if higher predictions (closer to 1) is correlated with higher values of this feature, and vice verse. Within this framework, the most significant trend can be seen in the "thalach" variable - the maximum heart rate acheived (based on online codebook). This is reasonable since high heart rate is common symptom for people proned to heart diseases.
+
+### Question 5 - predicts part breakdown 
+```{r}
+first_row <- head(heart_train,1)
+
+for (model in c("knn", "ada", "gbm", "rf")) {
+    explainer <- get(paste0(model, "_explain"))
+    model_perf <- predict_parts_break_down(explainer, first_row)
+    assign(paste0(model, "_bd"), model_perf)
+}
+
+gridExtra::grid.arrange(plot(knn_bd),plot(ada_bd), plot(gbm_bd), plot(rf_bd))
+
+```
+### Question 6 - prediction
+```{r predict models}
+for (i in c("knn", "ada", "gbm", "rf")) {
+         assign(paste0(i,"_pred"),
+         get(paste0(i,"_model")) %>% 
+           predict(newdata = heart_test) %>% 
+           as_tibble() %>% 
+           mutate(value = as.numeric(as.character(value))) %>% 
+           bind_cols(heart_test) %>% 
+           select(target, value) %>% 
+           rename("pred" = "value")
+  )
+}
+```
+### Question 7 - roc curves
+```{r}
+#Create the curves 
+knn_roc <- roc(knn_pred$target, knn_pred$pred)
+rf_roc <- roc(rf_pred$target, rf_pred$pred)
+ada_roc <- roc(ada_pred$target, ada_pred$pred)
+gbm_roc <- roc(gbm_pred$target, gbm_pred$pred)
+
+
+#Plot all the curves together
+# Plot the first ROC curve
+plot(knn_roc, col = "red", main = "ROC Curves", xlim = c(1,0), ylim = c(0, 1), xlab = "1 - Specificity", ylab = "Sensitivity")
+
+# Add the remaining ROC curves
+lines(rf_roc, col = "blue")
+lines(ada_roc, col = "green")
+lines(gbm_roc, col = "orange")
+
+# Add a legend
+legend("bottomright", legend = c("knn", "rf", "ada", "gbm"), col = c("red", "blue", "green", "orange"), lwd = 1)
+```
+### Question 8 - auc of the boosting model
+```{r}
+# Compute the AUC
+gbm_auc <- roc(gbm_pred$target, gbm_pred$pred)$auc
+
+# Print the AUC
+print(gbm_auc)
+```
+

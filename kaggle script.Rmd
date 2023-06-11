@@ -1,0 +1,46 @@
+---
+title: "Kaggle Project"
+author: "Yonatan Schoen and Yeshaya Nussbaum"
+date: "2023-06-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# Packages upload
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(
+    tidyverse,   
+    broom,      
+    rpart,       
+    rpart.plot,  
+    ranger,
+    rsample,
+    vip,        
+    knitr,       
+    here,        
+    rattle,
+    magrittr,
+    tidymodels,
+    caret,
+    doParallel,
+    here,
+    glmnet,
+    randomForest,
+    ##xgboost
+    tinytex
+)
+```
+
+# Data
+```{r, message=FALSE}
+df_train <- read_csv("kaggle_train.csv")
+df_test <- read_csv("kaggle_test.csv")
+
+summarise(df_train, count= FALSE) %>% kable()
+```
+
+
+
