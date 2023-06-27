@@ -31,8 +31,15 @@ pacman::p_load(
   ada,
   doParallel,
   pROC,
-  tinytex
+  kableExtra
 )
+
+theme_set(theme_classic())
+
+
+
+
+} 
 ```
 
 ### Question 1 - data load and code chunk

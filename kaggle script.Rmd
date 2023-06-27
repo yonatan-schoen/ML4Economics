@@ -6,41 +6,281 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
 
 # Packages upload
+rm(list = ls())
 if (!require("pacman")) install.packages("pacman")
-  pacman::p_load(
-    tidyverse,   
-    broom,      
-    rpart,       
-    rpart.plot,  
-    ranger,
-    rsample,
-    vip,        
-    knitr,       
-    here,        
-    rattle,
-    magrittr,
-    tidymodels,
-    caret,
-    doParallel,
-    here,
-    glmnet,
-    randomForest,
-    ##xgboost
-    tinytex
+pacman::p_load(
+   tidyverse,   # for data wrangling and visualization
+  broom,       # for tidying estimation output
+  here,        # for referencing folders and files
+  glmnet,      # for estimating lasso and ridge
+  DataExplorer,
+  tidymodels,
+  parsnip,
+  caret,
+  rsample,
+  yardstick,
+  caTools,
+  pROC,
+  rpart.plot,  
+  ranger,
+  rsample,
+  vip,        
+  knitr,       
+  here,        
+  rattle,
+  magrittr,
+  caret,
+  DALEX,
+  RColorBrewer,
+  ada,
+  doParallel,
+  pROC,
+  randomForest,
+  tinytex
 )
 ```
 
-# Data
+# Data upload and splitting
 ```{r, message=FALSE}
-df_train <- read_csv("kaggle_train.csv")
-df_test <- read_csv("kaggle_test.csv")
+train <- read_csv("kaggle_train.csv") 
+real_test <- read_csv("kaggle_test.csv")
 
-summarise(df_train, count= FALSE) %>% kable()
+set.seed(42)
 ```
+
+# Data exploration
+```{r}
+train %>% plot_histogram(binary_as_factor = FALSE)
+```
+The first thing that we can see is that the `farmer` indicator equal 0 for every obseravtions.
+
+## We would like to start with some data wrangling :
+1. We'll drop the `farmer` variable since all of the observations receive 0 for it.  
+```{r}
+train <- train %>% select(-c(ID,farmer))
+```
+
+
+Now we want to look at the data and check if we can infere some meaningful correlations or identify patterns we can use for prediction 
+
+## Experience variables
+```{r}
+# Full time experience 
+train %>% ggplot(aes(x = expf, y = lnwage)) +
+  geom_jitter() +
+  geom_smooth()
+
+# Full time experience squared
+train %>% ggplot(aes(x = expfsq, y = lnwage)) +
+  geom_jitter() +
+  geom_smooth()
+
+# Part time experience
+train %>% ggplot(aes(x = expp, y = lnwage)) +
+  geom_jitter() +
+  geom_smooth()
+
+# Part time experience squared
+train %>% ggplot(aes(x = exppsq, y = lnwage)) +
+  geom_jitter() +
+  geom_smooth()
+```
+
+We can conclude that expect from part time squared experience all other variables seem relevant to prediction.
+In addition, it's evident that there is strong correlation of the experience level especially in the early stages of the career.   
+
+
+## Variable Engineering 
+Based on the data and our domain knowledge we would like to add 3 important variables to improve the prediction : production, transport, construction, foodcare and etc
+1. High school graduate indicator
+2. skilled jobs indicator - excluding the unskilled jobs.
+3. Interacting gender with education and experience.
+specifically all jobs excluding : 
+```{r}
+ train <- train %>% mutate(
+      fin_comp_biz = ifelse((business==1|financialop==1|computer==1 | manager == 1),1,0),
+      lawphy_archi_sci = ifelse((lawyerphysician==1|architect==1|scientist==1),1,0),
+      soc_teach_legal = ifelse((socialworker==1|postseceduc==1|legaleduc==1|artist==1),1,0),
+      health = ifelse((healthcare==1|healthsupport==1|protective==1),1,0),
+      physical_labor = ifelse((building==1|production==1|constructextractinstall==1|transport==1),1,0),
+      office_sales = ifelse((sales==1|officeadmin==1),1,0),
+      all_college = ifelse((colldeg == 1| advdeg == 1),1,0),
+      total_exp    = expf + 0.5*expp,
+      female_college = female*all_college,
+      female_exp = female*(expf + 0.5*expp),
+      skill_jobs     = if_else(foodcare==1 | healthsupport==1 | building==1 | sales==1 | officeadmin==1 |
+                             production==1 | transport==1 | constructextractinstall==1, 0, 1),
+      not_white = ifelse((black == 1 | hisp == 1),1,0),
+      hs_grad     = if_else(edyrs>=12, 1, 0)   
+       ) %>% select(-c(business, financialop, computer, lawyerphysician, architect, scientist, socialworker, postseceduc, legaleduc, artist, healthcare, healthsupport, protective, building, production, constructextractinstall, transport, sales, officeadmin, exppsq,hisp,black ,otherrace, colldeg, advdeg, expf, expp, exppsq, northeast, northcentral, foodcar, manager)
+         )
+```
+
+
+# Models 
+
+Next, we wish to employ two regularization methods in order to produce predictions of the wages for individuals in the test set, without falling for overfitting. We set out using a Ridge model, which is simplest regularization method.
+
+## Ridge
+```{r}
+#create the X and Y data set
+train_mat <- train %>% as.matrix()
+
+Y <- train_mat[,1]
+X <- train_mat[,2:19]
+
+#fit the model
+fit_ridge <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
+
+# Plotting for illustration
+plot(fit_ridge, xvar = "lambda")
+
+
+# Cross validation for the ridge model
+cv_ridge <- cv.glmnet(x = X, y = Y, alpha = 0)
+plot(cv_ridge)
+```
+
+However, since the data at hand is sparse, with many binary variables receiving 1 very rarely, Ridge seems relatively unfit for prediction. Hence, we turn to Lasso, which is better with prediction tasks in sparse contexts. We implement it below.
+
+## Lasso
+```{r}
+#fit the model
+fit_lasso <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 1
+)
+
+# Plotting for illustration
+plot(fit_lasso, xvar = "lambda")
+
+# Cross validation for the lasso model
+cv_lasso <- cv.glmnet(x = X, y = Y, alpha = 1)
+plot(cv_lasso)
+```
+
+
+
+
+### Keep the Lasso coefficients which are different from zero
+```{r}
+# Keep the coefficients
+lasso_coef <- coef(cv_lasso, s = "lambda.1se") 
+ridge_coef <- coef(cv_ridge, s = "lambda.1se") 
+
+# look at the model
+lasso_coef
+
+# 
+# # Get the variable names corresponding to the non-omitted coefficients
+# 
+# # not working!! 
+# non_omitted_vars <- names(lasso_coef[!is.na(lasso_coef) & !is.nan(lasso_coef)]) 
+
+
+
+```
+The lasso model identified a number of important variables for prediction.  
+From the new variables we can see the lasso decided to keep only the `Skilled` indicator.
+
+The variables we decided to use in the "lasso" formula in the random forest are - female, skilled, expf, edyrs, colldeg, msa, south, black, building and foodcare                            
+
+## Random Forest - full formula
+In the first variation we will use all the variables
+```{r}
+#Define the full formula - 
+formula_full <- lnwage ~ .
+#formulasso <-  lnwage ~ female + skilled + expf + edyrs + colldeg + msa + south + black+ building + foodcare   
+
+
+#define the fit - 
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3
+  )
+
+# Full formula variation
+rf_model <- train(form =  formula_full,
+                  data = train,
+                  method = "rf",
+                  trControl = fitControl)
+
+# Lasso formula variation
+# rf_lasso_model <- train(form = formulasso,
+#                   data = train,
+#                   method = "rf",
+#                   trControl = fitControl)
+```
+
+
+
+```{r predict models}
+test <- real_test %>% mutate(
+      fin_comp_biz = ifelse((business==1|financialop==1|computer==1 | manager == 1),1,0),
+      lawphy_archi_sci = ifelse((lawyerphysician==1|architect==1|scientist==1),1,0),
+      soc_teach_legal = ifelse((socialworker==1|postseceduc==1|legaleduc==1|artist==1),1,0),
+      health = ifelse((healthcare==1|healthsupport==1|protective==1),1,0),
+      physical_labor = ifelse((building==1|production==1|constructextractinstall==1|transport==1),1,0),
+      office_sales = ifelse((sales==1|officeadmin==1),1,0),
+      all_college = ifelse((colldeg == 1| advdeg == 1),1,0),
+      total_exp    = expf + 0.5*expp,
+      female_college = female*all_college,
+      female_exp = female*(expf + 0.5*expp),
+      skill_jobs     = if_else(foodcare==1 | healthsupport==1 | building==1 | sales==1 | officeadmin==1 |
+                             production==1 | transport==1 | constructextractinstall==1, 0, 1),
+      not_white = ifelse((black == 1 | hisp == 1),1,0),
+      hs_grad     = if_else(edyrs>=12, 1, 0)   
+       ) %>% select(-c(business, financialop, computer, lawyerphysician, architect, scientist, socialworker, postseceduc, legaleduc, artist, healthcare, healthsupport, protective, building, production, constructextractinstall, transport, sales, officeadmin, exppsq,hisp,black ,otherrace, colldeg, advdeg, expf, expp, exppsq, northeast, northcentral, foodcare, manager,farmer)
+         )
+
+
+predict_lasso <- predict(cv_lasso, newx = as.matrix(test[,2:19]), s = cv_lasso$lambda.1se) 
+names(predict_lasso) <- c("lasso_pred")
+
+
+for (i in c("rf")) {
+         assign(paste0(i,"_pred"),
+         get(paste0(i,"_model")) %>% 
+           predict(newdata = test[,2:19]) %>% 
+           as_tibble() %>% 
+           mutate(value = as.numeric(as.character(value))) %>% 
+           bind_cols(real_test) %>% 
+           select(ID, value) %>% 
+           rename("pred" = "value")
+  )
+}
+
+
+# Combine Lasso and Random Forest predictions
+combined_data <- data.frame(ID = test$ID,
+                            lasso_pred = predict_lasso,
+                            rf_pred = rf_pred$pred,
+                            avg_pred = (predict_lasso + rf_pred$pred) / 2)
+
+#export results for kaggle
+lasso_rf_average <- combined_data %>% select(c(ID,s1.1))
+
+write.csv(lasso_rf_average, "lasso_rf_average.csv", row.names = F)
+write.csv(rf_pred, "rf_pred.csv", row.names = F)
+write.csv(combined_data, "all_pred.csv", row.names = F)
+
+
+
+```
+
+
+
+
+
+
 
 
 
