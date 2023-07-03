@@ -1,0 +1,614 @@
+---
+title: "ML4ECON - Final Project"
+author: "Yonatan Schoen"
+date: "`r Sys.Date()`"
+output: html_document
+theme: journal
+---
+
+```{=html}
+<style>
+body {
+text-align: justify}
+</style>
+```
+
+```{r, warning= FALSE, message= FALSE}
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(
+    DoubleML,
+    mlr3,
+    mlr3learners,
+    data.table,
+    plm,
+    estimater,
+    fixest,
+    lmtest,
+    haven,
+    stacks,
+    vtable,
+    tidyverse,
+    magrittr,
+    fastDummies,
+    stargazer,
+    kableExtra,
+    flextable,
+    officer,
+    stringr,
+    hdm,
+    AER,
+    tidymodels,
+    glmnet,
+    vip,
+    broom,      
+    rpart,       
+    rpart.plot,  
+    ranger,
+    rsample,
+    knitr,       
+    rattle,
+    caret,
+    doParallel,
+    tinytex
+    )
+
+```
+
+# Introduction
+
+This markdown contains both code and text for the final project in the ML4Econ course in HUJI, class of 2023. The paper I chose for the project is *US Food Aid and Civil Conflict*,by Nathan Nunn and Nancy Qian (2014).
+
+This project have two purposes : 1. Replicate the main results from Nunn & Qian (2014) paper 2. Extend the analysis with methods learned in the course, for example - using Lasso to choose variables, causal trees, etc.
+
+We begin by loading relevant packages, setting a table format and loading the dataset.
+
+```{r setup , message= FALSE, warning=FALSE}
+
+ #set the latex alike tables format 
+table_format <- function(x) {
+    kbl(x = x,booktabs = T, digits = 3, caption = NULL) %>%
+    add_header_above(c(" ", "Parsimonious specifications" = 4, "Baseline specification" = 3)) %>%
+    kable_styling(latex_options = c("repeat_header")) %>% 
+    kable_classic_2(lightable_options = c("bordered", "hover"), full_width = F, html_font = "Cambria",position = position)
+}
+
+#Load the data
+data <- read_dta("in_sample.dta")
+
+```
+
+# Nunn, Nathan, and Nancy Qian (2014) - Background
+
+Humanitarian aid, particularly food aid, is a critical policy tool aimed at addressing hunger and suffering in developing nations.\
+However, concerns have emerged in recent years regarding its effectiveness and potential negative impact on peace-building efforts.\
+In this paper, the authors study the effect of US food aid on conflict in recipient countries.
+
+To assess this question, the researchers focusing on the causal effect of US food aid on the emergence, duration and intensity of civil conflicts and interstate conflicts. To overcome challenges related to the endogeneity of the food-aid indicator variable, the authors search for alternative identification strategy to reveal the causal mechanism. For that purpose, The authors exploits time variation in food aid shipments due to changes in US wheat production, and cross-sectional variation in a country's tendency to receive any US food aid. By constructing an interaction variable between last year's US wheat production and the frequency of a country's food aid receipt, the authors create an instrumental variable for food aid recipient indicator in a given year.
+
+The study reveals a significant and positive association between US food aid and the incidence of civil conflict. However, no such relationship is found for interstate conflicts. Furthermore, the effect of food aid on conflicts is more pronounced for smaller-scale civil conflicts in countries with a recent history of such conflicts. Based on survival analysis methods, the findings suggest that food aid primarily prolongs the duration of conflicts rather than instigating new ones.
+
+# Nunn, Nathan, and Nancy Qian (2014) - Data, result and replication
+
+The Research make use of several data sources :\
+  \* Food and Agriculture Organization's(FAO) FAOSTAT database - indicates the amount of wheat aid shipped to a recipient country in a year from the United States \* Uppsala Conflict Data Program(UCDP) Armed Conflict Dataset - to measure the occurrence and characteristics of conflicts. The UCDP dataset includes details on the onset, duration, and intensity of civil and interstate conflicts.\
+\* United States Department of Agriculture(USDA) - to collect data on US wheat production, which is used to construct the instrument. \* The authors also include control variables to account for factors such as economic development, political stability, geographical characteristics, weather, and more, of recipient countries. Various sources been used to calculate those variables - including USAID, World Bank, FAO and more. \* The final sample includes 125 non-OECD countries for the years 1971--2006, which aggregates to 4089 observations in total.
+
+## Descriptive Statistics Replication
+
+I shall start by replicating the descriptive statistics summary table. Similar table can be found in the paper(Table 1). This table summarize the probability of different kinds of conflict to embark, amount of US wheat aid received, frequency of receiving and US food aid (Yearly,during 1971-2006), the lagged US wheat production (the instrument variable), and the local production of wheat and other cereals in the recipient country in the following year.  
+
+```{r, results='asis'}
+sum_tab <- data %>%
+  filter(in_sample == 1) %>%
+  select(any_war, intra_state, inter_state, wheat_aid, fadum_avg, instrument2, recipient_cereals_prod, recipient_wheat_prod)
+
+var.labs <- data.frame(
+              var = c('any_war', 'intra_state', 'inter_state', 'wheat_aid', 'fadum_avg', 'instrument2', 'recipient_cereals_prod', 'recipient_wheat_prod'), 
+              labels = c('Any conflict','Intrastate conflict',"Onset of intrastate conflict (all observations)", "US wheat aid (1,000 MT)","Frequency of receiving any US food aid", "Lagged US wheat production (1,000 MT)", "Recipient country cereals production", "Recipient country wheat production"))
+
+sumtable(sum_tab, title = "Summary Statistics", labels = var.labs ,digits = 3, summ = c('notNA(x)','mean(x)','sd(x)'), summ.names = c('Observations', 'Mean', 'SD'), col.align = 'center', note = "Observation is specific country in specific year. Some variables from the original table has been omitted due to irelevancy for our replication.")
+```
+
+I shall now prepar tha data for future estimations
+
+## Data Preperation
+
+```{r}
+#dummy_vars <- sapply(data, function(var) all(var %in% c(0, 1, NA)))
+
+# Convert dummy variables to factors in the dataset
+#data[dummy_vars] <- map_if(data[dummy_vars], is.logical, as.factor)
+
+# Convert remaining variables to factors if dummy_vars == TRUE
+#data <- data %>% mutate_if(dummy_vars, as.factor)
+
+# Convert also our fixed effects to factor - 
+data$risocode <- as.factor(data$risocode)
+data$year <- as.factor(data$year)
+data$wb_region <- as.factor(data$wb_region)
+
+```
+
+## Main Results Replication
+
+### Panel Data preperation
+
+```{r}
+# Fix problem in the code
+data <- data %>% filter(risocode != "TWN" & risocode != "GNQ")
+
+# Create a panel data object
+data_panel <- pdata.frame(data, index = c("risocode", "year"))
+# Subset the data to include only the observations in the sample
+subset_data <- subset(data_panel, in_sample == 1)
+
+# Creat controls locals - 
+US_controls <- c("oil_fadum_avg", "US_income_fadum_avg", "US_democ_pres_fadum_avg")
+
+
+# Expand the variable ranges in weather_controls
+# Define the weather controls
+weather_controls<-c("all_Precip_jan","all_Precip_feb","all_Precip_mar","all_Precip_apr","all_Precip_may","all_Precip_jun","all_Precip_jul","all_Precip_aug","all_Precip_sep","all_Precip_oct","all_Precip_nov","all_Precip_dec","all_Temp_jan","all_Temp_feb","all_Temp_mar","all_Temp_apr","all_Temp_may","all_Temp_jun","all_Temp_jul","all_Temp_aug","all_Temp_sep","all_Temp_oct","all_Temp_nov","all_Temp_dec","all_Precip_jan_faavg","all_Precip_feb_faavg","all_Precip_mar_faavg","all_Precip_apr_faavg","all_Precip_may_faavg","all_Precip_jun_faavg","all_Precip_jul_faavg","all_Precip_aug_faavg","all_Precip_sep_faavg","all_Precip_oct_faavg","all_Precip_nov_faavg","all_Precip_dec_faavg","all_Temp_jan_faavg","all_Temp_feb_faavg","all_Temp_mar_faavg","all_Temp_apr_faavg","all_Temp_may_faavg","all_Temp_jun_faavg","all_Temp_jul_faavg","all_Temp_aug_faavg","all_Temp_sep_faavg","all_Temp_oct_faavg","all_Temp_nov_faavg","all_Temp_dec_faavg")
+
+#Country""chars controls - 
+country_chars_controls <- c()
+
+ranges <- list(
+  c("gdp_y", 2, 36),
+  c("usmil_y", 2, 36),
+  c("usec_y", 2, 36)
+)
+
+country_chars_controls <- unlist(lapply(ranges, function(range) {
+  prefix <- range[1]
+  start <- range[2]
+  end <- range[3]
+  paste0(prefix, start:end)
+}))
+
+#Cereals controls - 
+cereals_controls <- c()
+
+ranges <- list(
+  c("rcereal_y", 2, 36),
+  c("rimport_y", 2, 36)
+)
+
+cereals_controls <- unlist(lapply(ranges, function(range) {
+  prefix <- range[1]
+  start <- range[2]
+  end <- range[3]
+  paste0(prefix, start:end)
+}))
+
+# Merge all controls into a single vector
+baseline_controls <- c(US_controls, weather_controls, country_chars_controls, cereals_controls)
+# Convert the list of variables to a character string separated by "+"
+variables_string <- paste(baseline_controls, collapse = " + ")
+
+```
+
+I will now replicate one of the main results of the article, which can be found in Table 2 in page 1644. The table shows the effect of food aid on conflict in 3 different specifications - (1) Using simple OLS estimations of wheat aid on conflict (2) Using reduced form estimations, replacing the food aid variable with the Lag US wheat production (3) Using IV strategy predicting the food aid with the Instrumental variable.
+
+# Table 2 replication 
+
+## OLS Estimation
+```{r, results='asis'}
+# Create an empty data frame to store the results
+est_table <- data.frame(Model = character(),
+                        Estimate = numeric(),
+                        Std.Error = numeric(),
+                        KP_F_Stat = numeric(),
+                        RKF = numeric(),
+                        stringsAsFactors = FALSE)
+
+# Define the OLS formula
+ols_formula <- formula(any_war ~ wheat_aid + risocode + year*wb_region)
+
+# Perform OLS estimates
+for (col in 1:4) {
+  
+  # Add additional controls based on the column number
+  if (col > 1) {
+    controls <- switch(col - 1,
+                       US_controls,
+                       weather_controls,
+                       country_chars_controls)
+    
+    # Create a new formula with updated controls
+    updated_formula <- as.formula(paste(deparse(ols_formula), "+", paste(controls, collapse = " + ")))
+    ols_formula <- update(ols_formula, updated_formula)
+  }
+  
+# Fit the OLS model using panel data regression
+model <- plm(ols_formula, data = data , index = c("risocode", "year"), model = "within", effect = "twoways")
+assign(paste0("model_", col, sep = ""), model)
+  
+# Extract the coefficient and standard error for "wheat_aid"
+assign(paste0("coef_", col, sep = ""), coeftest(model, vcov = vcovHC(model, cluster = "group")))
+est <- coefficients[1, "Estimate"]
+se <- coefficients[1, "Std. Error"]
+
+  # Add the results to the estimator table
+  est_table <- est_table %>%
+    add_row(Model = paste("Col", col, "-", ifelse(col == 1, "No Controls", controls)),
+            Estimate = est,
+            Std.Error = se)
+  
+  # Reset the formula for the next iteration
+  ols_formula <- formula(any_war ~ wheat_aid + risocode + year*wb_region)
+}
+
+# For Intra state specification   
+ols_formula <- formula(paste("any_war ~ wheat_aid + risocode + year*wb_region +", variables_string),sep="+")
+
+model_5 <- plm(ols_formula, data = data, index = c("risocode", "year"), model = "within", effect = "twoways")
+
+# Extract coefficients and clustered standard errors
+coef_5 <- coeftest(model_5, vcov = vcovHC(model_5, cluster = "group"))
+est <- coef_5[1, "Estimate"]
+se <- coef_5[1, "Std. Error"]
+
+# For Intra state specification   
+ols_formula <- formula(paste("intra_state ~ wheat_aid + risocode + year*wb_region +", variables_string),sep="+")
+
+
+intra_state_res <- plm(ols_formula, data = data, index = c("risocode", "year"), model = "within", effect = "twoways")
+
+# Extract coefficients and clustered standard errors
+coef_6 <- coeftest(intra_state_res, vcov = vcovHC(intra_state_res, cluster = "group"))
+est <- coef_6[1, "Estimate"]
+se <- coef_6[1, "Std. Error"]
+
+# Add the results to the estimator table
+est_table <- est_table %>%
+  add_row(Model = paste("Col", col, "-" , "intra_state_res"),
+          Estimate = est,
+          Std.Error = se)
+
+# For Inter state specification   
+ols_formula <- formula(paste("inter_state ~ wheat_aid + risocode + year*wb_region +", variables_string),sep="+")
+
+inter_state_res <- plm(ols_formula, data = data, index = c("risocode", "year"), model = "within", effect = "twoways")
+
+
+# Extract coefficients and clustered standard errors
+coef_7 <- coeftest(inter_state_res, vcov = vcovHC(inter_state_res, cluster = "group"))
+est <- coef_7[1, "Estimate"]
+se <- coef_7[1, "Std. Error"]
+
+# Add the results to the estimator table
+est_table <- est_table %>%
+  add_row(Model = paste("Col", col, "-" , "inter_state_res"),
+          Estimate = est,
+          Std.Error = se) 
+
+
+ols_table <- stargazer(coef_1, coef_2, coef_3, coef_4, coef_5,coef_6,coef_7, type = "text", keep = c("\\bwheat_aid\\b"), digits = 5,
+                column.labels   = c("Any Conflict","Intrastate","Interstate"), column.separate = c(5,1,1), covariate.labels = c("US wheat aid(1,000 MT)"))
+
+
+```
+
+## Reduced Form Estimation
+```{r, results='asis'}
+rf_data <- data %>% filter(in_sample == 1)
+rf_data$any_war <- rf_data$any_war*1000
+rf_data$intra_state <- rf_data$intra_state*1000
+rf_data$inter_state <- rf_data$inter_state*1000
+
+
+
+# Create an empty data frame to store the results
+est_table <- data.frame(Model = character(),
+                        Estimate = numeric(),
+                        Std.Error = numeric(),
+                        KP_F_Stat = numeric(),
+                        RKF = numeric(),
+                        stringsAsFactors = FALSE)
+
+# Define the OLS formula
+ols_formula <- formula(any_war ~ instrument + risocode + year*wb_region)
+
+# Perform OLS estimates
+for (col in 1:4) {
+  
+  # Add additional controls based on the column number
+  if (col > 1) {
+    controls <- switch(col - 1,
+                       US_controls,
+                       weather_controls,
+                       country_chars_controls)
+    
+    # Create a new formula with updated controls
+    updated_formula <- as.formula(paste(deparse(ols_formula), "+", paste(controls, collapse = " + ")))
+    ols_formula <- update(ols_formula, updated_formula)
+  }
+  
+# Fit the OLS model using panel data regression
+model <- plm(ols_formula, data = rf_data , index = c("risocode", "year"), model = "within", effect = "twoways")
+assign(paste0("model_", col, sep = ""), model)
+  
+# Extract the coefficient and standard error for "instrument"
+assign(paste0("coef_", col, sep = ""), coeftest(model, vcov = vcovHC(model, cluster = "group")))
+est <- coefficients[1, "Estimate"]
+se <- coefficients[1, "Std. Error"]
+
+  # Add the results to the estimator table
+  est_table <- est_table %>%
+    add_row(Model = paste("Col", col, "-", ifelse(col == 1, "No Controls", controls)),
+            Estimate = est,
+            Std.Error = se)
+  
+  # Reset the formula for the next iteration
+  ols_formula <- formula(any_war ~ instrument + risocode + year*wb_region)
+}
+
+# For Intra state specification   
+ols_formula <- formula(paste("any_war ~ instrument + risocode + year*wb_region +", variables_string),sep="+")
+
+model_5 <- plm(ols_formula, data = rf_data, index = c("risocode", "year"), model = "within", effect = "twoways")
+
+# Extract coefficients and clustered standard errors
+coef_5 <- coeftest(model_5, vcov = vcovHC(model_5, cluster = "group"))
+est <- coef_5[1, "Estimate"]
+se <- coef_5[1, "Std. Error"]
+
+# For Intra state specification   
+ols_formula <- formula(paste("intra_state ~ instrument + risocode + year*wb_region +", variables_string),sep="+")
+
+
+intra_state_res <- plm(ols_formula, data = rf_data, index = c("risocode", "year"), model = "within", effect = "twoways")
+
+# Extract coefficients and clustered standard errors
+coef_6 <- coeftest(intra_state_res, vcov = vcovHC(intra_state_res, cluster = "group"))
+est <- coef_6[1, "Estimate"]
+se <- coef_6[1, "Std. Error"]
+
+# Add the results to the estimator table
+est_table <- est_table %>%
+  add_row(Model = paste("Col", col, "-" , "intra_state_res"),
+          Estimate = est,
+          Std.Error = se)
+
+# For Inter state specification   
+ols_formula <- formula(paste("inter_state ~ instrument + risocode + year*wb_region +", variables_string),sep="+")
+
+inter_state_res <- plm(ols_formula, data = rf_data, index = c("risocode", "year"), model = "within", effect = "twoways")
+
+
+# Extract coefficients and clustered standard errors
+coef_7 <- coeftest(inter_state_res, vcov = vcovHC(inter_state_res, cluster = "group"))
+est <- coef_7[1, "Estimate"]
+se <- coef_7[1, "Std. Error"]
+
+# Add the results to the estimator table
+est_table <- est_table %>%
+  add_row(Model = paste("Col", col, "-" , "inter_state_res"),
+          Estimate = est,
+          Std.Error = se) 
+
+
+rf_table <- stargazer(coef_1, coef_2, coef_3, coef_4, coef_5,coef_6,coef_7, type = "text", keep = c("\\bwheat_aid\\b"),  digits = 5,
+                column.labels   = c("Any Conflict","Intrastate","Interstate"), column.separate = c(5,1,1), covariate.labels = c("Instrument(RF model)"))
+
+```
+
+# 2SLS Estimation
+```{r}
+iv_model1 <- plm(any_war ~ wheat_aid + risocode + year*wb_region | instrument + risocode + year*wb_region, 
+           data = data, index = c("risocode", "year"), model = "within", effect = "twoways")
+coef_iv1 <- coeftest(iv_model1, vcov = vcovHC(iv_model1, cluster = "group"))
+
+variables_string <- paste(US_controls, collapse = " + ")
+iv_model2 <- plm(as.formula(paste("any_war ~ wheat_aid + risocode + year*wb_region +", variables_string, " | ", "instrument + risocode + year*wb_region +", variables_string)), data = data, index = c("risocode", "year"), model = "within", effect = "twoways") 
+coef_iv2 <- coeftest(iv_model2, vcov = vcovHC(iv_model2, cluster = "group"))
+
+variables_string <- paste(variables_string, paste(weather_controls, collapse = " + "),collapse = " + ")
+iv_model3 <- plm(any_war ~ wheat_aid + risocode + year*wb_region | instrument + risocode + year*wb_region, 
+           data = data, index = c("risocode", "year"), model = "within", effect = "twoways")
+coef_iv3 <- coeftest(iv_model3, vcov = vcovHC(iv_model3, cluster = "group"))
+
+
+variables_string <- paste(variables_string, paste(country_chars_controls, collapse = " + "),collapse = " + ")
+iv_model4 <- plm(any_war ~ wheat_aid + risocode + year*wb_region | instrument + risocode + year*wb_region, 
+           data = data, index = c("risocode", "year"), model = "within", effect = "twoways")
+coef_iv4 <- coeftest(iv_model4, vcov = vcovHC(iv_model4, cluster = "group"))
+
+variables_string <- paste(baseline_controls, collapse = " + ")
+iv_model5<- plm(as.formula(paste("any_war ~ wheat_aid + risocode + year*wb_region +", variables_string, " | ", "instrument + risocode + year*wb_region +", variables_string)), data = data, index = c("risocode", "year"), model = "within", effect = "twoways")  
+coef_iv5 <- coeftest(iv_model5, vcov = vcovHC(iv_model5, cluster = "group"))
+
+iv_model6 <- plm(as.formula(paste("intra_state ~ wheat_aid + risocode + year*wb_region +", variables_string, " | ", "instrument + risocode + year*wb_region +", variables_string)), data = data, index = c("risocode", "year"), model = "within", effect = "twoways")  
+coef_iv6 <- coeftest(iv_model6, vcov = vcovHC(iv_model6, cluster = "group"))
+
+iv_model7 <- plm(as.formula(paste("inter_state ~ wheat_aid + risocode + year*wb_region +", variables_string, " | ", "instrument + risocode + year*wb_region +", variables_string)), data = data, index = c("risocode", "year"), model = "within", effect = "twoways")  
+coef_iv7 <- coeftest(iv_model7, vcov = vcovHC(iv_model7, cluster = "group"))
+
+
+#Fix the last column
+iv_table <- stargazer(coef_iv1, coef_iv2, coef_iv3, coef_iv4, coef_iv5, coef_iv6, type = "text", keep = c("\\bwheat_aid\\b"),  digits = 5,
+                column.labels = c("Any Conflict","Intrastate","Interstate"), column.separate = c(5,1,1), covariate.labels = c("Predicted wheat aid"))
+
+```
+As we can see, we received similar results to those in the paper(as presented in Table 2, column 5, 3rd row). 
+According to the estimates using the full set of baseline controls reported, a predicted 1,000 MT increase in US wheat aid increases the incidence of conflict by almost 0.30 percentage points, an effect that is statistically significant at 99% confidence level.
+
+
+# ML Extension
+
+A common challenge for researchers is deciding which control variables to include in their models. This problem is even more relevant in cases where the data is sparse, such as in our case. I'll now try to implement ML techniques which can be utilize to variable selection.
+Specifically I'll compare two methods to the original specification : (1) Double Lasso (2) Double Random Forest
+
+
+## IV estimation with Lasso-based variable selection 
+
+In the first part I will estimate the different specification with double lasso from the {hdm} package, 
+allowing for control variables selection by using the rlassoIV function. 
+
+
+```{r}
+# Version 1 - Using Double ML package and Random Forest Selection
+ml_data <- data %>% 
+  filter(!is.na(any_war) & !is.na(wheat_aid) & !is.na(inter_state)) %>% 
+  unite(region_year, wb_region, year, sep = "_", remove = TRUE) 
+
+ml_data$region_year <- as.factor(ml_data$region_year)
+
+Y  <- ml_data %>% select(any_war)  %>% as.matrix()
+D  <- ml_data %>% select(wheat_aid)  %>% as.matrix()
+Z  <- ml_data %>% select(instrument)  %>% as.matrix()
+X1 <- ml_data %>% select(risocode, region_year) %>% as.matrix()
+X2 <- ml_data %>% select(risocode,region_year,US_controls) %>% as.matrix()
+X3 <- ml_data %>% select(risocode, region_year,US_controls,weather_controls) %>% as.matrix()
+X4 <- ml_data %>% select(risocode,region_year,US_controls,weather_controls,country_chars_controls) %>% as.matrix()
+X5 <- ml_data %>% select(risocode, region_year,baseline_controls) %>% as.matrix()
+
+
+# Version 2 - using Double Lasso 
+data <- data %>% filter(in_sample == 1)
+lasso <- rlassoIVselectX(as.formula(paste("any_war ~ wheat_aid + risocode + year*wb_region +", variables_string, " | ", "instrument + risocode + year*wb_region +", variables_string)), data = data)
+
+summary(lasso) %>% kable()
+
+```
+
+The above result suggest a different result in to the specification in the 2sls strategy. 
+With bigger estimator 
+
+need to say things about it
+
+
+## IV estimation with double random forest 
+
+In the second part of the extension, I will estimate the baseline specification with double machine learning algorithm from the {DoubleML} package.
+Specifically, I will use double machine learning for partially linear IV regression models using random forest method. 
+According to the literature, this method can help us to get better estimates, especially when the dimensions of X  are large.
+
+
+```{r}
+# Specify the data and variables for the causal model
+set.seed(42)
+
+dml_data = double_ml_data_from_matrix(
+X = X5,  Y ,D, Z,
+cluster_vars = X5[, "risocode"],
+data_class = "DoubleMLData"
+)
+
+
+learner = lrn("regr.ranger", num.trees = 100, mtry = 20, min.node.size = 2, max.depth = 5)
+ml_l = learner$clone()
+ml_m = learner$clone()
+ml_r = learner$clone()
+
+dml_pliv_obj = DoubleMLPLIV$new(dml_data, ml_l, ml_m, ml_r)
+dml_pliv_obj$fit()
+print(dml_pliv_obj)
+```
+
+///
+# Prediction
+
+## Data Preperation
+
+```{r}
+set.seed(42)
+split <- data %>% initial_split(prop = 0.7)
+train <- training(split)
+test <- testing(split)
+```
+
+## Model Specification
+
+```{r}
+# Cross validation folds
+cv_folds <- train %>%
+  vfold_cv(v = 5)
+
+# For stacking
+ctrl_grid <- control_stack_grid()
+
+# Recipe (data processing)
+train_rec <- recipe(any_war ~ . , data = train) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors()) %>%
+  step_zv()
+  step_zv(all_predictors())
+
+
+train_prep <- train_rec %>% prep()
+```
+
+## Lasso Model
+
+```{r}
+# Model definition
+lasso_model <-
+  linear_reg(penalty = tune(), mixture = 1) %>%
+    set_engine("glmnet") %>%
+    set_mode("regression")
+
+# Define parameters for tuning
+lasso_grid <- grid_regular(penalty(c(-3,-1.5)), levels = 30)
+
+# Combine models and workflow
+lasso_wf <- workflow() %>%
+  add_recipe(train_rec) %>%
+  add_model(lasso_model)
+
+# Tune parameters
+lasso_results <- lasso_wf %>%
+  tune_grid(grid = lasso_grid,
+            resamples = cv_folds,
+            control = ctrl_grid)
+
+lasso_results %>% show_best(metric = "rmse") %>% select(-c(n, .config)) %>% tidy()
+```
+
+```{r}
+# Visualize results
+plot(lasso_results)??? 
+  
+# fit the model 
+lasso_best <- lasso_results %>% select_best(metric = "rmse")
+
+# Finalize workflow
+lasso_final <- finalize_workflow(lasso_wf, lasso_best)
+lasso_fit <- lasso_final %>% fit(train)
+```
+
+## Random forests model
+
+```{r}
+#Define the  formula - 
+formula_full <- any_war ~ .
+
+
+#define the fit - 
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3
+  )
+
+# Full formula variation
+rf_model <- train(form =  formula_full,
+                  data = train,
+                  metric='Accuracy',
+                  method = "rf",
+                  trControl = fitControl
+                  )
+
+```
+
+```{r}
+stack <- stacks() %>%
+  add_candidates(lasso_results) %>%
+  add_candidates(rf_model)
+
+stack_model <- stack %>%
+  blend_predictions()
+
+autoplot(stack_model, type = "weights")
+```
